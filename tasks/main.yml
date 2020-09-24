@@ -1,0 +1,85 @@
+---
+- name: Obtain SSO token for authentication to Red Hat Virtualization
+  no_log: false
+  ovirt_auth:
+    url: "{{ rhv_vm_url }}"
+    username: "{{ rhv_vm_username }}"
+    password: "{{ rhv_vm_password }}"
+    ca_file: "{{ rhv_vm_cafile }}"
+
+- name: Create Virtual Machine
+  ovirt_vm:
+    auth: "{{ ovirt_auth }}"
+    state: "{{ rhv_vm_state }}"
+    name: "{{ rhv_vm_name + '.' + rhv_vm_domain }}"
+    template: "{{ rhv_vm_template }}"
+    cluster: "{{ rhv_vm_cluster }}"
+    cpu_cores: "{{ rhv_vm_cpu_cores }}"
+    memory: "{{ rhv_vm_memory }}"
+    comment: "{{ rhv_vm_comment }} Tower user-job: {{ tower_user_name }}-{{ tower_job_id }}"
+    wait: True
+    nics:
+      - name: "{{ rhv_vm_nic_name }}"
+        profile_name: "{{ rhv_vm_nic_profile }}"
+    cloud_init:
+      nic_boot_protocol: "{{ rhv_vm_nic_boot_protocol }}"
+      nic_ip_address: "{{ rhv_vm_ip }}"
+      nic_netmask: "{{ rhv_vm_netmask }}"
+      nic_gateway: "{{ rhv_vm_gw }}"
+      nic_name: "{{ rhv_vm_nic_name }}"
+      nic_on_boot: true
+      dns_servers: "{{ rhv_vm_dns1 }}"
+      host_name: "{{ rhv_vm_name + '.' + rhv_vm_domain }}"
+      custom_script: |
+          ssh_pwauth: yes
+          disable_root: false
+          ssh_authorized_keys: {{ rhv_vm_cloud_user_pubkeys }}
+          chpasswd:
+              expire: false
+              list:
+                  - root:{{ rhv_vm_root_password_hash }}
+                  - cloud-user:{{ rhv_vm_root_password_hash }}
+          write_files:
+          - content: |
+              network: {config: disabled}
+            path: /etc/cloud/cloud.cfg.d/10_disable_network.cfg
+    cloud_init_persist: False
+  when: rhv_vm_state == "present" or rhv_vm_state == "running"
+
+- name: Delete Virtual Machine
+  ovirt_vm:
+    auth: "{{ ovirt_auth }}"
+    state: "{{ rhv_vm_state }}"
+    name: "{{ ansible_fqdn }}"
+  when: rhv_vm_state == "absent"
+
+- name: Add Extra disk to virtual machine
+  ovirt_disk:
+    auth: "{{ ovirt_auth }}"
+    name: "{{ rhv_vm_name+'-Data_disk' }}"
+    vm_name: "{{ rhv_vm_name + '.' + rhv_vm_domain }}"
+    size: "{{ rhv_vm_extra_disk_size }}"
+    format: "{{ rhv_vm_extra_disk_format }}"
+    interface: "{{ rhv_vm_extra_disk_interface }}"
+    storage_domain: "{{ rhv_vm_storage_domain }}"
+  when: not(
+          (rhv_vm_extra_disk_size is undefined)
+          or
+          (rhv_vm_extra_disk_size is none)
+          or
+          (rhv_vm_extra_disk_size | trim == '')
+        )
+
+- name: Wait for Virtual Machine to boot up and become responsive to SSH
+  wait_for:
+    port: 22
+    host: "{{ rhv_vm_ip }}"
+    search_regex: OpenSSH
+    delay: 10
+    timeout: 300
+  when: rhv_vm_state == "present" or rhv_vm_state == "running"
+
+- name: Revoke the SSO token we generated for provisioning the Virtual Machine
+  ovirt_auth:
+    state: absent
+    ovirt_auth: "{{ ovirt_auth }}"
